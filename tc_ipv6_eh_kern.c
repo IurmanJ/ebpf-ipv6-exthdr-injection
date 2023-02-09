@@ -15,6 +15,19 @@
 #define TC_ACT_OK		0
 #define TC_ACT_SHOT		2
 
+#define EH_MAX_BYTES		2048 // (255 + 1) << 3
+
+struct exthdr_t {
+	__u8 bytes[EH_MAX_BYTES];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct exthdr_t);
+} percpu_map SEC(".maps");
+
 char _license[] SEC("license") = "GPL";
 
 
@@ -23,15 +36,15 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 nh, __u16 len)
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
 	struct ethhdr *eth = data;
+	struct exthdr_t *exthdr;
 	struct ipv6hdr *ipv6;
-	__u8 bytes[len];
-	__u32 off;
+	__u32 off, idx = 0;
 
-	/* Initialize EH Options' payload to 0's, although we might not do this
-	 * if we wanted direct bytes randomization.
+	/* Get bytes buffer for current Extension Header.
 	 */
-	for(__u16 i = 0; i < len; i++)
-		bytes[i] = 0;
+	exthdr = bpf_map_lookup_elem(&percpu_map, &idx);
+	if (!exthdr)
+		return TC_ACT_OK;
 
 	/* Pointer overflow check required by the verifier.
 	 */
@@ -58,16 +71,16 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 nh, __u16 len)
 			return TC_ACT_OK;
 	}
 
-	bytes[0] = ipv6->nexthdr;
-	bytes[1] = (len >> 3) - 1;
+	exthdr->bytes[0] = ipv6->nexthdr;
+	exthdr->bytes[1] = (len >> 3) - 1;
 	//TODO case when multiple options
-	bytes[2] = 0x1e;
-	bytes[3] = len - 4;
+	exthdr->bytes[2] = 0x1e;
+	exthdr->bytes[3] = len - 4;
 
 	if (bpf_skb_adjust_room(skb, len, BPF_ADJ_ROOM_NET, 0))
 		return TC_ACT_OK;
 
-	if (bpf_skb_store_bytes(skb, off, bytes, len, BPF_F_RECOMPUTE_CSUM))
+	if (bpf_skb_store_bytes(skb, off, &(exthdr->bytes), len, BPF_F_RECOMPUTE_CSUM))
 		return TC_ACT_SHOT;
 
 	/* We need to restore/recheck pointers or the verifier will complain,
@@ -98,10 +111,9 @@ SEC("tc/egress/hbh8") int egress_hbh8(struct __sk_buff *skb) {
 SEC("tc/egress/hbh256") int egress_hbh256(struct __sk_buff *skb) {
 	return egress_eh(skb, NEXTHDR_HOP, 256);
 }
-//TODO 512
-/*tc_ipv6_eh_kern.c:35:12: error: Looks like the BPF stack limit of 512 bytes is exceeded. Please move large on stack variables into BPF per-cpu array map.*/
-
-// DO, HBH and RHs max size is 2048 bytes (2048/8 - 1 = 255)
+SEC("tc/egress/hbh512") int egress_hbh512(struct __sk_buff *skb) {
+	return egress_eh(skb, NEXTHDR_HOP, 512);
+}
 
 /**********************/
 /* Destination Option */
@@ -136,4 +148,6 @@ SEC("tc/egress/do128") int egress_do128(struct __sk_buff *skb) {
 SEC("tc/egress/do256") int egress_do256(struct __sk_buff *skb) {
 	return egress_eh(skb, NEXTHDR_DEST, 256);
 }
-//TODO 512 (, 1024, 2048?)
+SEC("tc/egress/do512") int egress_do512(struct __sk_buff *skb) {
+	return egress_eh(skb, NEXTHDR_DEST, 512);
+}

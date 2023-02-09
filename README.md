@@ -28,4 +28,6 @@ Use case: inject a Hop-by-hop (8 bytes) on egress packets
 # tc filter add dev eth0 egress bpf da obj tc_ipv6_eh_kern.o sec tc/egress/hbh8
 ```
 
+**IMPORTANT**: you need the iproute2 tool compiled with libbpf support.
+
 You can add more filters (on protocol, src/dst addresses, ports, etc) with tc or inside the program itself (if the latter, a bpf map is probably the way to go).
