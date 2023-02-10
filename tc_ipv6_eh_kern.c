@@ -17,6 +17,8 @@
 
 #define EH_MAX_BYTES		2048 // (255 + 1) << 3
 
+#define MIN(a,b) ((a)<(b) ? (a):(b))
+
 struct exthdr_t {
 	__u8 bytes[EH_MAX_BYTES];
 };
@@ -39,6 +41,10 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 nh, __u16 len)
 	struct exthdr_t *exthdr;
 	struct ipv6hdr *ipv6;
 	__u32 off, idx = 0;
+
+	/* TODO condition for HBHs/DOs */
+	if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
+		return TC_ACT_OK;
 
 	/* Get bytes buffer for current Extension Header.
 	 */
@@ -73,9 +79,12 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 nh, __u16 len)
 
 	exthdr->bytes[0] = ipv6->nexthdr;
 	exthdr->bytes[1] = (len >> 3) - 1;
-	//TODO case when multiple options
-	exthdr->bytes[2] = 0x1e;
-	exthdr->bytes[3] = len - 4;
+
+	for(__u16 i = 2; i + 1 < len; i += 257)
+	{
+		exthdr->bytes[i] = 0x1e;
+		exthdr->bytes[i + 1] = MIN(len - i - 2, 255);
+	}
 
 	if (bpf_skb_adjust_room(skb, len, BPF_ADJ_ROOM_NET, 0))
 		return TC_ACT_OK;
