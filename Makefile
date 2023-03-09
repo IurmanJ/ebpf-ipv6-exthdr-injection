@@ -13,7 +13,8 @@ apt-packages:
 		llvm \
 		clang \
 		libcap-dev \
-		binutils-dev
+		binutils-dev \
+		git
 .PHONY: install-deps
 
 libbpf:

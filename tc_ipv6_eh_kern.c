@@ -18,6 +18,8 @@
 
 #define ETH_P_IPV6		0x86DD
 
+#define ICMPV6_ECHO_REQUEST	128
+
 #define TC_ACT_OK		0
 #define TC_ACT_SHOT		2
 
@@ -25,6 +27,14 @@
 #define EH_MAX_BYTES		((255 + 1) << 3)
 #define BPF_F_RECOMPUTE_CSUM	(1ULL << 0)
 #define NONE			255
+
+#define JAMES_UDP_SPORT	61344
+#define JAMES_UDP_DPORT	33435
+#define JAMES_TCP_SPORT	61888
+#define JAMES_TCP_DPORT	443
+#define JAMES_ICMP6_ID		62144
+
+#define icmp6_identifier	icmp6_dataun.u_echo.identifier
 
 struct exthdr_t {
 	__u8 bytes[EH_MAX_BYTES];
@@ -68,61 +78,99 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 
 	switch(eh)
 	{
-		case NEXTHDR_HOP:
-		case NEXTHDR_DEST:
-			if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
-				return NULL;
-
-			exthdr->bytes[0] = nh;
-			exthdr->bytes[1] = (len >> 3) - 1;
-
-			for(__u16 i = 2; i + 1 < len; i += 257)
-			{
-				exthdr->bytes[i] = 0x1e;
-				exthdr->bytes[i + 1] = MIN(len - i - 2, 255);
-			}
-			break;
-
-		case NEXTHDR_FRAGMENT:
-			if (len != 8)
-				return NULL;
-
-			exthdr->bytes[0] = nh;
-
-			/* TODO
-			non-atomic: offset=0 / more=1
-			atomic: offset=xxx / more=0
-			random identification number?
-			*/
-			__u16 raw16 = bpf_htons((8 << 3) | type);
-			memcpy(&(exthdr->bytes[2]), &raw16, sizeof(__u16));
-			__u32 raw32 = bpf_htonl(67634178);
-			memcpy(&(exthdr->bytes[4]), &raw32, sizeof(__u32));
-			break;
-
-		default:
+	case NEXTHDR_HOP:
+	case NEXTHDR_DEST:
+		if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
 			return NULL;
+
+		exthdr->bytes[0] = nh;
+		exthdr->bytes[1] = (len >> 3) - 1;
+
+		for(__u16 i = 2; i + 1 < len; i += 257)
+		{
+			exthdr->bytes[i] = 0x1e;
+			exthdr->bytes[i + 1] = MIN(len - i - 2, 255);
+		}
+		break;
+
+	case NEXTHDR_FRAGMENT:
+		if (len != 8)
+			return NULL;
+
+		exthdr->bytes[0] = nh;
+
+		/* TODO
+		non-atomic: offset=0 / more=1
+		atomic: offset=xxx / more=0
+		random identification number?
+		*/
+		__u16 raw16 = bpf_htons((8 << 3) | type);
+		memcpy(&(exthdr->bytes[2]), &raw16, sizeof(__u16));
+		__u32 raw32 = bpf_htonl(67634178);
+		memcpy(&(exthdr->bytes[4]), &raw32, sizeof(__u32));
+		break;
+
+	default:
+		return NULL;
 	}
 
 	return exthdr;
 }
 
-static __always_inline int is_l4_supported(__u8 type)
+/* Determine when to inject EHs, i.e., based on JAMES configuration.
+ * Note: it would be easier to replace the following by a tc filter
+ *       (i.e., a command), but it looks like we cannot make the ebpf
+ *       program run depending on the result of another tc filter.
+ */
+static __always_inline __u8 should_inject_eh(struct __sk_buff *skb,
+					      __u8 ipv6_nxthdr, __u32 offset)
 {
-	/* Support for TCP, UDP and ICMP.
-	 */
-	switch(type)
-	{
-		case NEXTHDR_TCP:
-		case NEXTHDR_UDP:
-		case NEXTHDR_ICMP:
-			break;
+	void *data_end = (void *)(long)skb->data_end;
+	void *data = (void *)(long)skb->data;
+	struct icmp6hdr *icmp6;
+	struct tcphdr *tcp;
+	struct udphdr *udp;
 
-		default:
+	switch(ipv6_nxthdr)
+	{
+	case NEXTHDR_TCP:
+		if (data + offset + sizeof(*tcp) > data_end)
 			return 0;
+
+		tcp = data + offset;
+		if (tcp->syn && bpf_ntohs(tcp->source) == JAMES_TCP_SPORT &&
+		    bpf_ntohs(tcp->dest) == JAMES_TCP_DPORT)
+			return 1;
+
+		break;
+
+	case NEXTHDR_UDP:
+		if (data + offset + sizeof(*udp) > data_end)
+			return 0;
+
+		udp = data + offset;
+		if (bpf_ntohs(udp->source) == JAMES_UDP_SPORT &&
+		    bpf_ntohs(udp->dest) == JAMES_UDP_DPORT)
+			return 1;
+
+		break;
+
+	case NEXTHDR_ICMP:
+		if (data + offset + sizeof(*icmp6) > data_end)
+			return 0;
+
+		icmp6 = data + offset;
+		if (icmp6->icmp6_type == ICMPV6_ECHO_REQUEST &&
+		    bpf_ntohs(icmp6->icmp6_identifier) == JAMES_ICMP6_ID)
+			return 1;
+
+		break;
+
+	default:
+		break;
 	}
 
-	return 1;
+	return 0;
 }
 
 static __always_inline struct ipv6hdr * ipv6_header(struct __sk_buff *skb,
@@ -159,7 +207,7 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 eh,
 
 	/* Check if EH should be injected with current layer 4.
 	 */
-	if (!is_l4_supported(ipv6->nexthdr))
+	if (!should_inject_eh(skb, ipv6->nexthdr, off))
 		return TC_ACT_OK;
 
 	/* Prepare bytes for current Extension Header buffer.
