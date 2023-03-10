@@ -1,7 +1,6 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
-#include <string.h> //memcpy
 
 /* Next Header fields of IPv6 header
  */
@@ -83,8 +82,9 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
 			return NULL;
 
-		exthdr->bytes[0] = nh;
-		exthdr->bytes[1] = (len >> 3) - 1;
+		struct ipv6_opt_hdr *opt = (struct ipv6_opt_hdr *)exthdr->bytes;
+		opt->nexthdr = nh;
+		opt->hdrlen = (len >> 3) - 1;
 
 		for(__u16 i = 2; i + 1 < len; i += 257)
 		{
@@ -97,17 +97,14 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		if (len != 8)
 			return NULL;
 
-		exthdr->bytes[0] = nh;
+		struct frag_hdr *frag = (struct frag_hdr *)exthdr->bytes;
+		frag->nexthdr = nh;
+		frag->identification = bpf_htonl(0xf88eb466);
 
-		/* TODO
-		non-atomic: offset=0 / more=1
-		atomic: offset=xxx / more=0
-		random identification number?
-		*/
-		__u16 raw16 = bpf_htons((8 << 3) | type);
-		memcpy(&(exthdr->bytes[2]), &raw16, sizeof(__u16));
-		__u32 raw32 = bpf_htonl(67634178);
-		memcpy(&(exthdr->bytes[4]), &raw32, sizeof(__u32));
+		if (type == FRAG_NON_ATOMIC)
+			frag->frag_off = bpf_htons(1); // offset=0, more=1
+		else
+			frag->frag_off = bpf_htons(1448); // offset=1448, more=0
 		break;
 
 	default:
@@ -141,7 +138,6 @@ static __always_inline __u8 should_inject_eh(struct __sk_buff *skb,
 		if (tcp->syn && bpf_ntohs(tcp->source) == JAMES_TCP_SPORT &&
 		    bpf_ntohs(tcp->dest) == JAMES_TCP_DPORT)
 			return 1;
-
 		break;
 
 	case NEXTHDR_UDP:
@@ -152,7 +148,6 @@ static __always_inline __u8 should_inject_eh(struct __sk_buff *skb,
 		if (bpf_ntohs(udp->source) == JAMES_UDP_SPORT &&
 		    bpf_ntohs(udp->dest) == JAMES_UDP_DPORT)
 			return 1;
-
 		break;
 
 	case NEXTHDR_ICMP:
@@ -163,7 +158,6 @@ static __always_inline __u8 should_inject_eh(struct __sk_buff *skb,
 		if (icmp6->icmp6_type == ICMPV6_ECHO_REQUEST &&
 		    bpf_ntohs(icmp6->icmp6_identifier) == JAMES_ICMP6_ID)
 			return 1;
-
 		break;
 
 	default:
