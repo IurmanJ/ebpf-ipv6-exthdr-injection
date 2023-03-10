@@ -51,9 +51,10 @@ struct {
 enum {
 	RH_TYPE0 = 0,	/* Source Route (DEPRECATED) [RFC2460][RFC5095] */
 	RH_TYPE1,	/* Nimrod (DEPRECATED 2009-05-06) */
-	RH_TYPE2,	/* Type 2 Routing Header [RFC6275] */
+	RH_TYPE2,	/* Mobility support [RFC6275] */
 	RH_TYPE3,	/* RPL Source Route Header [RFC6554] */
 	RH_TYPE4,	/* Segment Routing Header (SRH) [RFC8754] */
+	RH_TYPE55,	/* Undefined */
 	__RH_TYPE_MAX
 };
 
@@ -62,6 +63,13 @@ enum {
 enum {
 	FRAG_ATOMIC = 0,	/* "More" flag = 0 */
 	FRAG_NON_ATOMIC,	/* "More" flag = 1 */
+};
+
+/* IPSec
+ */
+enum {
+	IPSEC_AH = 0,
+	IPSEC_ESP,
 };
 
 char _license[] SEC("license") = "GPL";
@@ -106,6 +114,37 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		else
 			frag->frag_off = bpf_htons(1448); // offset=1448, more=0
 		break;
+
+	case NEXTHDR_ROUTING:
+		if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
+			return NULL;
+
+		//struct ipv6_rt_hdr (generic RH header)
+		//RH-2: struct rt2_hdr
+		//RH-3: struct ipv6_rpl_sr_hdr
+		//RH-4: struct ipv6_sr_hdr
+
+		switch(type)
+		{
+		case RH_TYPE0:
+		case RH_TYPE55:
+			;
+			struct rt0_hdr *rh = (struct rt0_hdr *)exthdr->bytes;
+			break;
+
+		default:
+			return NULL;
+		}
+		break;
+
+	/*TODO: AH
+	Next header = nh
+	Length = 10 (48 bytes)
+	Reserved = 0
+	AH SPI = 0x00000222
+	AH Sequence = 10
+	AH ICV = 0xe0c5b3620c76a5bee2a03e00a64b64eb17d96572de8b03db1db00c339b2eed0800000000
+	*/
 
 	default:
 		return NULL;
@@ -249,10 +288,20 @@ static __always_inline int egress_frag(struct __sk_buff *skb, __u8 type)
 	return egress_eh(skb, NEXTHDR_FRAGMENT, type, 8);
 }
 
-/*static __always_inline int egress_rh(struct __sk_buff *skb, __u8 type, __u16 len)
+static __always_inline int egress_rh(struct __sk_buff *skb, __u8 rht, __u16 len)
 {
-	return egress_eh(skb, NEXTHDR_ROUTING, type, len);
-}*/
+	return egress_eh(skb, NEXTHDR_ROUTING, rht, len);
+}
+
+static __always_inline int egress_ah(struct __sk_buff *skb, __u8 t, __u16 len)
+{
+	return egress_eh(skb, NEXTHDR_AUTH, t, len);
+}
+
+static __always_inline int egress_esp(struct __sk_buff *skb, __u8 t, __u16 len)
+{
+	return egress_eh(skb, NEXTHDR_ESP, t, len);
+}
 
 
 /*****************************/
@@ -318,4 +367,62 @@ SEC("tc/egress/frag_nonatomic") int egress_fragNA(struct __sk_buff *skb) {
 /******************/
 /* Routing Header */
 /******************/
-//TODO max 127 segments possible to grow the size (don't exceed 512 bytes as for other tests: MTU)
+
+// Routing Type 0
+SEC("tc/egress/rh0-8") int egress_rh0_0seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE0, 8);
+}
+SEC("tc/egress/rh0-24") int egress_rh0_1seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE0, 24);
+}
+SEC("tc/egress/rh0-680") int egress_rh0_42seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE0, 680);
+}
+SEC("tc/egress/rh0-1368") int egress_rh0_85seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE0, 1368);
+}
+
+// Routing Type 2 (fixed size)
+SEC("tc/egress/rh2") int egress_rh2(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE2, 24);
+}
+
+// Undefined Routing Type 55 (similar to Routing Type 0 by default)
+SEC("tc/egress/rh55-8") int egress_rh55_0seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE55, 8);
+}
+SEC("tc/egress/rh55-24") int egress_rh55_1seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE55, 24);
+}
+SEC("tc/egress/rh55-680") int egress_rh55_42seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE55, 680);
+}
+SEC("tc/egress/rh55-1368") int egress_rh55_85seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE55, 1368);
+}
+
+/*********/
+/* IPSec */
+/*********/
+
+// Authentication Header (AH)
+SEC("tc/egress/ah-16") int egress_ah_small(struct __sk_buff *skb) {
+	return egress_ah(skb, IPSEC_AH, 16);
+}
+SEC("tc/egress/ah-680") int egress_ah_medium(struct __sk_buff *skb) {
+	return egress_ah(skb, IPSEC_AH, 680);
+}
+SEC("tc/egress/ah-1368") int egress_ah_big(struct __sk_buff *skb) {
+	return egress_ah(skb, IPSEC_AH, 1368);
+}
+
+// Encapsulating Security Payload (ESP)
+SEC("tc/egress/esp-16") int egress_esp_small(struct __sk_buff *skb) {
+	return egress_esp(skb, IPSEC_ESP, 16);
+}
+SEC("tc/egress/esp-680") int egress_esp_medium(struct __sk_buff *skb) {
+	return egress_esp(skb, IPSEC_ESP, 680);
+}
+SEC("tc/egress/esp-1368") int egress_esp_big(struct __sk_buff *skb) {
+	return egress_esp(skb, IPSEC_ESP, 1368);
+}
