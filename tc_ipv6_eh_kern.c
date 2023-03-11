@@ -55,7 +55,7 @@ enum {
 	RH_TYPE2,	/* Mobility support [RFC6275] */
 	RH_TYPE3,	/* RPL Source Route Header [RFC6554] */
 	RH_TYPE4,	/* Segment Routing Header (SRH) [RFC8754] */
-	RH_TYPE55,	/* Undefined */
+	RH_TYPE55 = 55,/* Undefined */
 	__RH_TYPE_MAX
 };
 
@@ -66,20 +66,33 @@ enum {
 	FRAG_NON_ATOMIC,	/* "More" flag = 1 */
 };
 
-/* struct ip_esp_hdr is not included in vmlinux.h (why?)
+/* Not included in vmlinux.h (why?)
  */
 struct ip_esp_hdr {
 	__be32 spi;
 	__be32 seq_no;
-	__u8  enc_data[];
+	__u8 enc_data[];
+};
+struct rt2_hdr {
+	struct ipv6_rt_hdr rt_hdr;
+	__u32 reserved;
+	struct in6_addr addr;
+};
+struct ipv6_rpl_sr_hdr {
+	__u8 nexthdr;
+	__u8 hdrlen;
+	__u8 type;
+	__u8 segments_left;
+	__be32 flags;
+	struct in6_addr addr[];
 };
 
 char _license[] SEC("license") = "GPL";
 
 
 static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
-							 __u16 *len, __u8 nh,
-							 __u16 ip6_plen)
+							 __u16 *len,
+							 struct ipv6hdr *ipv6)
 {
 	__u32 idx = 0;
 	struct exthdr_t *exthdr = bpf_map_lookup_elem(&percpu_map, &idx);
@@ -94,7 +107,7 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 			return NULL;
 
 		struct ipv6_opt_hdr *opt = (void *)exthdr->bytes;
-		opt->nexthdr = nh;
+		opt->nexthdr = ipv6->nexthdr;
 		opt->hdrlen = (*len >> 3) - 1;
 
 		for(__u16 i = 2; i + 1 < *len; i += 257)
@@ -109,7 +122,7 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 			return NULL;
 
 		struct frag_hdr *frag = (void *)exthdr->bytes;
-		frag->nexthdr = nh;
+		frag->nexthdr = ipv6->nexthdr;
 		frag->identification = bpf_htonl(0xf88eb466);
 
 		if (type == FRAG_NON_ATOMIC)
@@ -119,20 +132,61 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		break;
 
 	case NEXTHDR_ROUTING:
-		if (*len < 8 || (*len % 8) || *len > EH_MAX_BYTES)
+		if (*len < 24 || (*len % 8) || *len > EH_MAX_BYTES)
 			return NULL;
-
-		//struct ipv6_rt_hdr (generic RH header)
-		//RH-2: struct rt2_hdr
-		//RH-3: struct ipv6_rpl_sr_hdr
-		//RH-4: struct ipv6_sr_hdr
 
 		switch(type)
 		{
 		case RH_TYPE0:
 		case RH_TYPE55:
 			;
-			struct rt0_hdr *rh = (void *)exthdr->bytes;
+			struct rt0_hdr *rh0 = (void *)exthdr->bytes;
+			rh0->rt_hdr.nexthdr = ipv6->nexthdr;
+			rh0->rt_hdr.hdrlen = (*len >> 3) - 1;
+			rh0->rt_hdr.type = type;
+
+			__u16 n_rh0_segs = (*len - sizeof(*rh0))
+						/ sizeof(ipv6->daddr);
+			for(__u16 i = 0; i < n_rh0_segs; i++)
+				rh0->addr[i] = ipv6->daddr;
+			break;
+
+		case RH_TYPE2:
+			if (*len != 24)
+				return NULL;
+
+			struct rt2_hdr *rh2 = (void *)exthdr->bytes;
+			rh2->rt_hdr.nexthdr = ipv6->nexthdr;
+			rh2->rt_hdr.hdrlen = 2;
+			rh2->rt_hdr.type = type;
+			rh2->rt_hdr.segments_left = 1;
+			rh2->addr = ipv6->daddr;
+			break;
+
+		case RH_TYPE3:
+			;
+			struct ipv6_rpl_sr_hdr *rpl6 = (void *)exthdr->bytes;
+			rpl6->nexthdr = ipv6->nexthdr;
+			rpl6->hdrlen = (*len >> 3) - 1;
+			rpl6->type = type;
+
+			__u16 n_rpl_seg = (*len - sizeof(*rpl6))
+						/ sizeof(ipv6->daddr);
+			for(__u16 i = 0; i < n_rpl_seg; i++)
+				rpl6->addr[i] = ipv6->daddr;
+			break;
+
+		case RH_TYPE4:
+			;
+			struct ipv6_sr_hdr *seg6 = (void *)exthdr->bytes;
+			seg6->nexthdr = ipv6->nexthdr;
+			seg6->hdrlen = (*len >> 3) - 1;
+			seg6->type = type;
+
+			__u16 n_segments = (*len - sizeof(*seg6))
+						/ sizeof(ipv6->daddr);
+			for(__u16 i = 0; i < n_segments; i++)
+				seg6->segments[i] = ipv6->daddr;
 			break;
 
 		default:
@@ -148,7 +202,7 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		__u16 n_icv = (*len - 12) >> 2;
 
 		struct ip_auth_hdr *ah = (void *)exthdr->bytes;
-		ah->nexthdr = nh;
+		ah->nexthdr = ipv6->nexthdr;
 		ah->hdrlen = ((sizeof(*ah) + n_icv * sizeof(ah_icv)) >> 2) - 2;
 		ah->spi = bpf_htonl(0x11223344);
 		ah->seq_no = bpf_htonl(0x00000001);
@@ -158,7 +212,7 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		break;
 
 	case NEXTHDR_ESP:
-		if (*len < 16 || (*len % 8))
+		if (*len < 16 || (*len % 8) || *len > EH_MAX_BYTES)
 			return NULL;
 
 		const __u8 esp_enc[] = { 0xde, 0xad, 0xbe, 0xef };
@@ -168,10 +222,9 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		esp->spi = bpf_htonl(0x11223344);
 		esp->seq_no = bpf_htonl(0x00000001);
 
+		*len += bpf_ntohs(ipv6->payload_len) % 8;
 		for(__u16 i = 0; i < n_enc; i++)
 			memcpy(esp->enc_data + i*4, esp_enc, sizeof(esp_enc));
-
-		*len += ip6_plen % 8;
 		break;
 
 	default:
@@ -273,8 +326,7 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 eh,
 
 	/* Prepare bytes for current Extension Header buffer.
 	 */
-	exthdr = prepare_bytes(eh, type, &len, ipv6->nexthdr,
-				bpf_ntohs(ipv6->payload_len));
+	exthdr = prepare_bytes(eh, type, &len, ipv6);
 	if (!exthdr)
 		return TC_ACT_OK;
 
@@ -283,7 +335,8 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 eh,
 	if (bpf_skb_adjust_room(skb, len, BPF_ADJ_ROOM_NET, 0))
 		return TC_ACT_OK;
 
-	if (bpf_skb_store_bytes(skb, off, &(exthdr->bytes), len, BPF_F_RECOMPUTE_CSUM))
+	if (bpf_skb_store_bytes(skb, off, &(exthdr->bytes), len,
+				 BPF_F_RECOMPUTE_CSUM))
 		return TC_ACT_SHOT;
 
 	/* We need to restore/recheck pointers or the verifier will complain,
@@ -398,9 +451,6 @@ SEC("tc/egress/frag_nonatomic") int egress_fragNA(struct __sk_buff *skb) {
 /******************/
 
 // Routing Type 0
-SEC("tc/egress/rh0-8") int egress_rh0_0seg(struct __sk_buff *skb) {
-	return egress_rh(skb, RH_TYPE0, 8);
-}
 SEC("tc/egress/rh0-24") int egress_rh0_1seg(struct __sk_buff *skb) {
 	return egress_rh(skb, RH_TYPE0, 24);
 }
@@ -416,10 +466,29 @@ SEC("tc/egress/rh2") int egress_rh2(struct __sk_buff *skb) {
 	return egress_rh(skb, RH_TYPE2, 24);
 }
 
-// Undefined Routing Type 55 (similar to Routing Type 0 by default)
-SEC("tc/egress/rh55-8") int egress_rh55_0seg(struct __sk_buff *skb) {
-	return egress_rh(skb, RH_TYPE55, 8);
+// Routing Type 3
+SEC("tc/egress/rh3-24") int egress_rh3_1seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE3, 24);
 }
+SEC("tc/egress/rh3-680") int egress_rh3_42seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE3, 680);
+}
+SEC("tc/egress/rh3-1368") int egress_rh3_85seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE3, 1368);
+}
+
+// Routing Type 4
+SEC("tc/egress/rh4-24") int egress_rh4_1seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE4, 24);
+}
+SEC("tc/egress/rh4-680") int egress_rh4_42seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE4, 680);
+}
+SEC("tc/egress/rh4-1368") int egress_rh4_85seg(struct __sk_buff *skb) {
+	return egress_rh(skb, RH_TYPE4, 1368);
+}
+
+// Undefined Routing Type 55 (similar to Routing Type 0 by default)
 SEC("tc/egress/rh55-24") int egress_rh55_1seg(struct __sk_buff *skb) {
 	return egress_rh(skb, RH_TYPE55, 24);
 }
