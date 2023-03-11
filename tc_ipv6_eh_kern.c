@@ -1,6 +1,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include <string.h> //memcpy
 
 /* Next Header fields of IPv6 header
  */
@@ -65,18 +66,20 @@ enum {
 	FRAG_NON_ATOMIC,	/* "More" flag = 1 */
 };
 
-/* IPSec
+/* struct ip_esp_hdr is not included in vmlinux.h (why?)
  */
-enum {
-	IPSEC_AH = 0,
-	IPSEC_ESP,
+struct ip_esp_hdr {
+	__be32 spi;
+	__be32 seq_no;
+	__u8  enc_data[];
 };
 
 char _license[] SEC("license") = "GPL";
 
 
 static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
-							 __u16 len, __u8 nh)
+							 __u16 *len, __u8 nh,
+							 __u16 ip6_plen)
 {
 	__u32 idx = 0;
 	struct exthdr_t *exthdr = bpf_map_lookup_elem(&percpu_map, &idx);
@@ -87,25 +90,25 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 	{
 	case NEXTHDR_HOP:
 	case NEXTHDR_DEST:
-		if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
+		if (*len < 8 || (*len % 8) || *len > EH_MAX_BYTES)
 			return NULL;
 
-		struct ipv6_opt_hdr *opt = (struct ipv6_opt_hdr *)exthdr->bytes;
+		struct ipv6_opt_hdr *opt = (void *)exthdr->bytes;
 		opt->nexthdr = nh;
-		opt->hdrlen = (len >> 3) - 1;
+		opt->hdrlen = (*len >> 3) - 1;
 
-		for(__u16 i = 2; i + 1 < len; i += 257)
+		for(__u16 i = 2; i + 1 < *len; i += 257)
 		{
 			exthdr->bytes[i] = 0x1e;
-			exthdr->bytes[i + 1] = MIN(len - i - 2, 255);
+			exthdr->bytes[i + 1] = MIN(*len - i - 2, 255);
 		}
 		break;
 
 	case NEXTHDR_FRAGMENT:
-		if (len != 8)
+		if (*len != 8)
 			return NULL;
 
-		struct frag_hdr *frag = (struct frag_hdr *)exthdr->bytes;
+		struct frag_hdr *frag = (void *)exthdr->bytes;
 		frag->nexthdr = nh;
 		frag->identification = bpf_htonl(0xf88eb466);
 
@@ -116,7 +119,7 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		break;
 
 	case NEXTHDR_ROUTING:
-		if (len < 8 || (len % 8) || len > EH_MAX_BYTES)
+		if (*len < 8 || (*len % 8) || *len > EH_MAX_BYTES)
 			return NULL;
 
 		//struct ipv6_rt_hdr (generic RH header)
@@ -129,7 +132,7 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		case RH_TYPE0:
 		case RH_TYPE55:
 			;
-			struct rt0_hdr *rh = (struct rt0_hdr *)exthdr->bytes;
+			struct rt0_hdr *rh = (void *)exthdr->bytes;
 			break;
 
 		default:
@@ -137,14 +140,39 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		}
 		break;
 
-	/*TODO: AH
-	Next header = nh
-	Length = 10 (48 bytes)
-	Reserved = 0
-	AH SPI = 0x00000222
-	AH Sequence = 10
-	AH ICV = 0xe0c5b3620c76a5bee2a03e00a64b64eb17d96572de8b03db1db00c339b2eed0800000000
-	*/
+	case NEXTHDR_AUTH:
+		if (*len < 16 || (*len % 8) || *len > 1024)
+			return NULL;
+
+		const __u8 ah_icv[] = { 0xde, 0xad, 0xbe, 0xef };
+		__u16 n_icv = (*len - 12) >> 2;
+
+		struct ip_auth_hdr *ah = (void *)exthdr->bytes;
+		ah->nexthdr = nh;
+		ah->hdrlen = ((sizeof(*ah) + n_icv * sizeof(ah_icv)) >> 2) - 2;
+		ah->spi = bpf_htonl(0x11223344);
+		ah->seq_no = bpf_htonl(0x00000001);
+
+		for(__u16 i = 0; i < n_icv; i++)
+			memcpy(ah->auth_data + i*4, ah_icv, sizeof(ah_icv));
+		break;
+
+	case NEXTHDR_ESP:
+		if (*len < 16 || (*len % 8))
+			return NULL;
+
+		const __u8 esp_enc[] = { 0xde, 0xad, 0xbe, 0xef };
+		__u16 n_enc = (*len - 8) >> 2;
+
+		struct ip_esp_hdr *esp = (void *)exthdr->bytes;
+		esp->spi = bpf_htonl(0x11223344);
+		esp->seq_no = bpf_htonl(0x00000001);
+
+		for(__u16 i = 0; i < n_enc; i++)
+			memcpy(esp->enc_data + i*4, esp_enc, sizeof(esp_enc));
+
+		*len += ip6_plen % 8;
+		break;
 
 	default:
 		return NULL;
@@ -245,7 +273,8 @@ static __always_inline int egress_eh(struct __sk_buff *skb, __u8 eh,
 
 	/* Prepare bytes for current Extension Header buffer.
 	 */
-	exthdr = prepare_bytes(eh, type, len, ipv6->nexthdr);
+	exthdr = prepare_bytes(eh, type, &len, ipv6->nexthdr,
+				bpf_ntohs(ipv6->payload_len));
 	if (!exthdr)
 		return TC_ACT_OK;
 
@@ -293,14 +322,14 @@ static __always_inline int egress_rh(struct __sk_buff *skb, __u8 rht, __u16 len)
 	return egress_eh(skb, NEXTHDR_ROUTING, rht, len);
 }
 
-static __always_inline int egress_ah(struct __sk_buff *skb, __u8 t, __u16 len)
+static __always_inline int egress_ah(struct __sk_buff *skb, __u16 len)
 {
-	return egress_eh(skb, NEXTHDR_AUTH, t, len);
+	return egress_eh(skb, NEXTHDR_AUTH, NONE, len);
 }
 
-static __always_inline int egress_esp(struct __sk_buff *skb, __u8 t, __u16 len)
+static __always_inline int egress_esp(struct __sk_buff *skb, __u16 len)
 {
-	return egress_eh(skb, NEXTHDR_ESP, t, len);
+	return egress_eh(skb, NEXTHDR_ESP, NONE, len);
 }
 
 
@@ -406,23 +435,23 @@ SEC("tc/egress/rh55-1368") int egress_rh55_85seg(struct __sk_buff *skb) {
 /*********/
 
 // Authentication Header (AH)
-SEC("tc/egress/ah-16") int egress_ah_small(struct __sk_buff *skb) {
-	return egress_ah(skb, IPSEC_AH, 16);
+SEC("tc/egress/ah-16") int egress_ah_min(struct __sk_buff *skb) {
+	return egress_ah(skb, 16);
 }
-SEC("tc/egress/ah-680") int egress_ah_medium(struct __sk_buff *skb) {
-	return egress_ah(skb, IPSEC_AH, 680);
+SEC("tc/egress/ah-512") int egress_ah_medium(struct __sk_buff *skb) {
+	return egress_ah(skb, 512);
 }
-SEC("tc/egress/ah-1368") int egress_ah_big(struct __sk_buff *skb) {
-	return egress_ah(skb, IPSEC_AH, 1368);
+SEC("tc/egress/ah-1024") int egress_ah_max(struct __sk_buff *skb) {
+	return egress_ah(skb, 1024);
 }
 
 // Encapsulating Security Payload (ESP)
-SEC("tc/egress/esp-16") int egress_esp_small(struct __sk_buff *skb) {
-	return egress_esp(skb, IPSEC_ESP, 16);
+SEC("tc/egress/esp-16") int egress_esp_min(struct __sk_buff *skb) {
+	return egress_esp(skb, 16);
 }
-SEC("tc/egress/esp-680") int egress_esp_medium(struct __sk_buff *skb) {
-	return egress_esp(skb, IPSEC_ESP, 680);
+SEC("tc/egress/esp-512") int egress_esp_medium(struct __sk_buff *skb) {
+	return egress_esp(skb, 512);
 }
-SEC("tc/egress/esp-1368") int egress_esp_big(struct __sk_buff *skb) {
-	return egress_esp(skb, IPSEC_ESP, 1368);
+SEC("tc/egress/esp-1024") int egress_esp_big(struct __sk_buff *skb) {
+	return egress_esp(skb, 1024);
 }
