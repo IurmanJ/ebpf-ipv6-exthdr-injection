@@ -15,6 +15,9 @@
 #define NEXTHDR_ICMP		58	/* ICMPv6 */
 #define NEXTHDR_NONE		59	/* No next header */
 #define NEXTHDR_DEST		60	/* Destination options header */
+#define NEXTHDR_MOBILITY	135	/* Mobility header */
+#define NEXTHDR_HIP		139	/* Host Identity Protocol */
+#define NEXTHDR_SHIM6		140	/* Shim6 Protocol */
 
 #define ETH_P_IPV6		0x86DD
 
@@ -75,7 +78,7 @@ struct ip_esp_hdr {
 };
 struct rt2_hdr {
 	struct ipv6_rt_hdr rt_hdr;
-	__u32 reserved;
+	__be32 res;
 	struct in6_addr addr;
 };
 struct ipv6_rpl_sr_hdr {
@@ -85,6 +88,48 @@ struct ipv6_rpl_sr_hdr {
 	__u8 segments_left;
 	__be32 flags;
 	struct in6_addr addr[];
+};
+
+/* Mobility Header (RFC 6275, section 6.1).
+ * MH Type 0 (Binding Refresh Request) without Mobility Options.
+ */
+struct ipv6_mobility_hdr_type0 {
+	__u8 nexthdr;
+	__u8 hdrlen;
+	__u8 mh_type;
+	__u8 res;
+	__be16 csum;
+	__u8 res2;
+};
+
+/* Host Identity Protocol Version 2 (RFC 7401, section 5.1).
+ * Packet Type 1 (I1 - the HIP Initiator Packet).
+ */
+struct ipv6_hip_hdr {
+	__u8 nexthdr;
+	__u8 hdrlen;
+	__u8 pkt_type;
+	__u8 version;
+	__be16 csum;
+	__be16 controls;
+	struct in6_addr sender_hit;
+	struct in6_addr receiver_hit;
+	__be16 opt_type;
+	__be16 opt_len;
+	__u8 gid1;
+	__u8 gid2;
+	__u8 gid3;
+	__u8 gid4;
+};
+
+/* Shim6 Protocol (RFC 5533, section 5.1).
+ * Shim6 Payload Extension Header.
+ */
+struct ipv6_shim6_hdr {
+	__u8 nexthdr;
+	__u8 hdrlen;
+	__be16 p_flag;
+	__be32 ctx_tag;
 };
 
 char _license[] SEC("license") = "GPL";
@@ -225,6 +270,49 @@ static __always_inline struct exthdr_t * prepare_bytes(__u8 eh, __u8 type,
 		*len += bpf_ntohs(ipv6->payload_len) % 8;
 		for(__u16 i = 0; i < n_enc; i++)
 			memcpy(esp->enc_data + i*4, esp_enc, sizeof(esp_enc));
+		break;
+
+	case NEXTHDR_MOBILITY:
+		if (type != 0 || *len != 8)
+			return NULL;
+
+		struct ipv6_mobility_hdr_type0 *mh = (void *)exthdr->bytes;
+		mh->nexthdr = ipv6->nexthdr;
+		mh->hdrlen = 0;
+		mh->mh_type = 0;
+		mh->csum = 0;
+		break;
+
+	case NEXTHDR_HIP:
+		if (type != 1 || *len != 48)
+			return NULL;
+
+		struct ipv6_hip_hdr *hip = (void *)exthdr->bytes;
+		hip->nexthdr = ipv6->nexthdr;
+		hip->hdrlen = (*len >> 3) - 1;
+		hip->pkt_type = 1;
+		hip->version = (2 << 4) + 1;
+		hip->csum = 0;
+		hip->controls = 0;
+		hip->sender_hit = ipv6->saddr;
+		hip->receiver_hit = ipv6->daddr;
+		hip->opt_type = bpf_htons(511);
+		hip->opt_len = bpf_htons(4);
+		hip->gid1 = 1;
+		hip->gid2 = 2;
+		hip->gid3 = 3;
+		hip->gid4 = 4;
+		break;
+
+	case NEXTHDR_SHIM6:
+		if (*len != 8)
+			return NULL;
+
+		struct ipv6_shim6_hdr *shim = (void *)exthdr->bytes;
+		shim->nexthdr = ipv6->nexthdr;
+		shim->hdrlen = 0;
+		shim->p_flag = bpf_htons(1 << 15);
+		shim->ctx_tag = bpf_htonl(123);
 		break;
 
 	default:
@@ -449,7 +537,6 @@ SEC("tc/egress/frag_nonatomic") int egress_fragNA(struct __sk_buff *skb) {
 /******************/
 /* Routing Header */
 /******************/
-
 // Routing Type 0
 SEC("tc/egress/rh0-24") int egress_rh0_1seg(struct __sk_buff *skb) {
 	return egress_rh(skb, RH_TYPE0, 24);
@@ -502,7 +589,6 @@ SEC("tc/egress/rh55-1368") int egress_rh55_85seg(struct __sk_buff *skb) {
 /*********/
 /* IPSec */
 /*********/
-
 // Authentication Header (AH)
 SEC("tc/egress/ah-16") int egress_ah_min(struct __sk_buff *skb) {
 	return egress_ah(skb, 16);
@@ -523,4 +609,28 @@ SEC("tc/egress/esp-512") int egress_esp_medium(struct __sk_buff *skb) {
 }
 SEC("tc/egress/esp-1024") int egress_esp_big(struct __sk_buff *skb) {
 	return egress_esp(skb, 1024);
+}
+
+/*******************/
+/* Mobility Header */
+/*******************/
+// MH Type 0 without Mobility Options
+SEC("tc/egress/mh") int egress_mh(struct __sk_buff *skb) {
+	return egress_eh(skb, NEXTHDR_MOBILITY, 0, 8);
+}
+
+/**************************/
+/* Host Identity Protocol */
+/**************************/
+// Packet Type 1
+SEC("tc/egress/hip") int egress_hip(struct __sk_buff *skb) {
+	return egress_eh(skb, NEXTHDR_HIP, 1, 48);
+}
+
+/******************/
+/* Shim6 Protocol */
+/******************/
+// Shim6 Payload Extension Header
+SEC("tc/egress/shim6") int egress_shim6(struct __sk_buff *skb) {
+	return egress_eh(skb, NEXTHDR_SHIM6, NONE, 8);
 }
