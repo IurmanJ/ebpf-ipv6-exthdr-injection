@@ -19,7 +19,7 @@ apt-packages:
 
 libbpf:
 	if [ ! -e deps/libbpf ] ; then git clone --recursive --depth 1 https://github.com/libbpf/libbpf ./deps/libbpf ; fi
-	$(MAKE) -j -C deps/libbpf/src/ BUILD_STATIC_ONLY=y DESTDIR="$(MAKEFILE_DIR)/build" INCLUDEDIR= LIBDIR= UAPIDIR= install
+	$(MAKE) -j -C deps/libbpf/src/ DESTDIR="$(MAKEFILE_DIR)/build" install
 .PHONY: libbpf
 
 bpftool:
