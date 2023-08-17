@@ -1,5 +1,6 @@
 MAKEFILE_DIR=$(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 CLANG=clang
+GCC=gcc
 
 all: deps build
 .PHONY: all
@@ -32,6 +33,7 @@ build:
 	mkdir -p $@
 	deps/bpftool/src/bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@/vmlinux.h
 	$(CLANG) -g -O2 -Wall -Wextra -target bpf -D__TARGET_ARCH_x86_64 -I $@ -c tc_ipv6_eh_kern.c -o $@/tc_ipv6_eh_kern.o
+	$(GCC) tc_ipv6_eh_user.c -lbpf -o tc_ipv6_eh_user.o
 .PHONY: build
 
 clean:
