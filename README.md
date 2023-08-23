@@ -1,6 +1,6 @@
 # IPv6 Extension Headers injection with eBPF
 
-Example of a tc/eBPF kernel program that injects IPv6 Extension Headers.
+Example of a tc/eBPF program that injects IPv6 Extension Headers.
 
 ## Compilation
 
@@ -25,7 +25,7 @@ Use case: inject a Hop-by-hop (8 bytes) on egress packets
 
 ```
 # tc qdisc add dev eth0 clsact
-# tc filter add dev eth0 egress bpf da obj tc_ipv6_eh_kern.o sec tc/egress/hbh8
+# tc filter add dev eth0 egress bpf da obj build/tc_ipv6_eh_kern.o sec egress
 ```
 
 **IMPORTANT**: you need the iproute2 tool compiled with libbpf support.

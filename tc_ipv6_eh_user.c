@@ -1,8 +1,6 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <errno.h>
-#include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 #include "tc_ipv6_eh.h"
 
@@ -26,8 +24,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	value.enabled = 77;
-	memset(value.bytes, 0, EH_MAX_BYTES);
+	value.bytes_len = 8;
+	memset(value.bytes, 0, MAX_BYTES);
+	value.bytes[2] = 0x01;
+	value.bytes[3] = 0x04;
 
 	/* Apply changes with lock */
 	ret = bpf_map_update_elem(fd, &key, &value, BPF_EXIST|BPF_F_LOCK);
