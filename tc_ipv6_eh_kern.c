@@ -112,8 +112,8 @@ static __always_inline struct ipv6hdr * ipv6_header(struct __sk_buff *skb,
 SEC("egress")
 int egress_eh6(struct __sk_buff *skb)
 {
-	__u32 off, bytes_len, /*off_last_nxthdr,*/ idx = 0;
-	__u8 type_first_eh;//, *data;
+	__u32 off, bytes_len, off_last_nxthdr, idx = 0;
+	__u8 type_first_eh/*, *data*/;
 	struct exthdr_t *exthdr;
 	struct ipv6hdr *ip6;
 
@@ -136,21 +136,25 @@ int egress_eh6(struct __sk_buff *skb)
 
 	/* Hold the lock to read data.
 	 *
-	 * Note: we can't hold the lock and call a function, so we either need
-	 *       to copy bytes on the stack (too big) or read them without the
-	 *	 lock (not ideal, but what can we do?).
+	 * Note: we can't hold the lock and call a function on ->bytes, so we
+	 *       either need to copy bytes on the stack (too big) or read them
+	 *	 without the lock (not good, but what can we do?).
 	 */
 	bpf_spin_lock(&exthdr->lock);
 	bytes_len = exthdr->bytes_len;
 	type_first_eh = exthdr->type_first_eh;
-	//off_last_nxthdr = exthdr->off_last_nxthdr;
+	off_last_nxthdr = exthdr->off_last_nxthdr;
 	bpf_spin_unlock(&exthdr->lock);
+
+	if (bytes_len < EH_MIN_BYTES || bytes_len > MAX_BYTES)
+		return TC_ACT_OK;
 
 	/* Make room for new bytes to be inserted.
 	 */
 	if (bpf_skb_adjust_room(skb, bytes_len, BPF_ADJ_ROOM_NET, 0))
 		return TC_ACT_OK;
-	if (bpf_skb_store_bytes(skb, off, &(exthdr->bytes), bytes_len,
+
+	if (bpf_skb_store_bytes(skb, off, exthdr->bytes, bytes_len,
 				 BPF_F_RECOMPUTE_CSUM))
 		return TC_ACT_SHOT;
 
