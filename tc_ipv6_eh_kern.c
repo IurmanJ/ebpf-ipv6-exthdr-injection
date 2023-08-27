@@ -113,9 +113,9 @@ SEC("egress")
 int egress_eh6(struct __sk_buff *skb)
 {
 	__u32 off, bytes_len, off_last_nxthdr, idx = 0;
-	__u8 type_first_eh/*, *data*/;
 	struct exthdr_t *exthdr;
 	struct ipv6hdr *ip6;
+	__u8 type_first_eh;
 
 	/* Check for IPv6, and pointer overflow (required by the verifier).
 	 */
@@ -137,13 +137,15 @@ int egress_eh6(struct __sk_buff *skb)
 	/* Hold the lock to read data.
 	 *
 	 * Note: we can't hold the lock and call a function on ->bytes, so we
-	 *       either need to copy bytes on the stack (too big) or read them
-	 *	 without the lock (not good, but what can we do?).
+	 *       either need to copy bytes on the stack (too big, and too slow)
+	 *	 or read them without the lock (not good, but what can we do?).
 	 */
 	bpf_spin_lock(&exthdr->lock);
 	bytes_len = exthdr->bytes_len;
 	type_first_eh = exthdr->type_first_eh;
 	off_last_nxthdr = exthdr->off_last_nxthdr;
+	if (off_last_nxthdr < MAX_BYTES)
+		exthdr->bytes[off_last_nxthdr] = ip6->nexthdr; //TODO conccurent read below
 	bpf_spin_unlock(&exthdr->lock);
 
 	if (bytes_len < EH_MIN_BYTES || bytes_len > MAX_BYTES)
@@ -166,8 +168,6 @@ int egress_eh6(struct __sk_buff *skb)
 
 	/* Now, we can update the next header and the payload length fields.
 	 */
-	//data = (u8 *)ip6 + sizeof(*ip6) + off_last_nxthdr;
-	//*data = ip6->nexthdr;
 	ip6->nexthdr = type_first_eh;
 	ip6->payload_len = bpf_htons(skb->len - off);
 
