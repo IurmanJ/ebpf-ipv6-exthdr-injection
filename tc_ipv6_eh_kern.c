@@ -42,8 +42,8 @@ char _license[] SEC("license") = "GPL";
  *       (i.e., a command), but it looks like we cannot make the ebpf
  *       program run depending on the result of another tc filter (?).
  */
-static __always_inline __u8 pass_custom_filter(struct __sk_buff *skb,
-					      __u8 ipv6_nxthdr, __u32 offset)
+static __always_inline __u8 pass_custom_filter(
+	struct __sk_buff *skb, __u8 ipv6_nxthdr, __u32 offset)
 {
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
@@ -90,8 +90,8 @@ static __always_inline __u8 pass_custom_filter(struct __sk_buff *skb,
 	return 0;
 }
 
-static __always_inline struct ipv6hdr * ipv6_header(struct __sk_buff *skb,
-						      __u32 *offset)
+static __always_inline struct ipv6hdr * ipv6_header(
+	struct __sk_buff *skb, __u32 *offset)
 {
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
@@ -148,7 +148,7 @@ int egress_eh6(struct __sk_buff *skb)
 		exthdr->bytes[off_last_nxthdr] = ip6->nexthdr; //TODO conccurent read below
 	bpf_spin_unlock(&exthdr->lock);
 
-	if (bytes_len < EH_MIN_BYTES || bytes_len > MAX_BYTES)
+	if (bytes_len < MIN_BYTES || bytes_len > MAX_BYTES)
 		return TC_ACT_OK;
 
 	/* Make room for new bytes to be inserted.
