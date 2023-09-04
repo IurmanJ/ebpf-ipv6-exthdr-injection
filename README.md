@@ -20,6 +20,8 @@ Compile the eBPF program:
 $ make
 ```
 
+Note: recent distros have it enabled by default.
+
 ### Used environment
 
 - Linux kernel version 5.15.0-82-generic
@@ -28,14 +30,16 @@ $ make
 
 Some oldest kernel versions should be fine too. However, pay attention to oldest clang versions. You may encounter some verifier errors during bpf program loading (e.g., with clang 10).
 
+Note: for instance, the above environment corresponds to Ubuntu 22.04.3 LTS (Jammy) and would work by default.
+
 ## Example
 
-Use case: inject a Hop-by-hop (8 bytes) on egress packets
+Use case: inject a Hop-by-hop Options (8 bytes) and a Destination Options (16 bytes) on egress packets.
 
 ```
 # tc qdisc add dev eth0 clsact
 # tc filter add dev eth0 egress bpf da obj build/tc_ipv6_eh_kern.o sec egress
-# LD_LIBRARY_PATH=deps/libbpf/src ./build/tc_ipv6_eh_user.o --hbh 8
+# LD_LIBRARY_PATH=deps/libbpf/src ./build/tc_ipv6_eh_user.o --enable --hbh 8 --dest 16
 ```
 
 **IMPORTANT**: you need the iproute2 tool compiled with libbpf support.

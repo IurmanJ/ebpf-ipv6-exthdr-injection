@@ -112,10 +112,10 @@ static __always_inline struct ipv6hdr * ipv6_header(
 SEC("egress")
 int egress_eh6(struct __sk_buff *skb)
 {
-	__u32 off, bytes_len, off_last_nxthdr, idx = 0;
+	__u32 off, bytes_len, off_last_nexthdr, idx = 0;
 	struct exthdr_t *exthdr;
 	struct ipv6hdr *ip6;
-	__u8 type_first_eh;
+	__u8 ip6nexthdr;
 
 	/* Check for IPv6, and pointer overflow (required by the verifier).
 	 */
@@ -125,8 +125,8 @@ int egress_eh6(struct __sk_buff *skb)
 
 	/* Custom filter applied per packet.
 	 */
-	if (!pass_custom_filter(skb, ip6->nexthdr, off))
-		return TC_ACT_OK;
+	//if (!pass_custom_filter(skb, ip6->nexthdr, off))
+	//	return TC_ACT_OK;
 
 	/* Retrieve the map element we need.
 	 */
@@ -142,10 +142,10 @@ int egress_eh6(struct __sk_buff *skb)
 	 */
 	bpf_spin_lock(&exthdr->lock);
 	bytes_len = exthdr->bytes_len;
-	type_first_eh = exthdr->type_first_eh;
-	off_last_nxthdr = exthdr->off_last_nxthdr;
-	if (off_last_nxthdr < MAX_BYTES)
-		exthdr->bytes[off_last_nxthdr] = ip6->nexthdr; //TODO conccurent read below
+	ip6nexthdr = exthdr->ip6nexthdr;
+	off_last_nexthdr = exthdr->off_last_nexthdr;
+	if (off_last_nexthdr < MAX_BYTES)
+		exthdr->bytes[off_last_nexthdr] = ip6->nexthdr; //TODO conccurent read below
 	bpf_spin_unlock(&exthdr->lock);
 
 	if (bytes_len < MIN_BYTES || bytes_len > MAX_BYTES)
@@ -168,7 +168,7 @@ int egress_eh6(struct __sk_buff *skb)
 
 	/* Now, we can update the next header and the payload length fields.
 	 */
-	ip6->nexthdr = type_first_eh;
+	ip6->nexthdr = ip6nexthdr;
 	ip6->payload_len = bpf_htons(skb->len - off);
 
 	return TC_ACT_OK;
