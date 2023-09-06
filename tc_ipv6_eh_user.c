@@ -2,6 +2,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/libbpf.h>
 #include <errno.h>
+#include <linux/in.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/rpl.h>
@@ -404,7 +405,7 @@ int main(int argc, char **argv) {
 				rh->segments[j] = rh_addr;
 			}
 			rh->segments_left = rh_segs;
-			rh->first_segment = rh_segs;//TODO make sure it should not be 0 instead
+			rh->first_segment = rh_segs - 1;
 
 			if (exthdr.bytes_len == 0) {
 				exthdr.ip6nexthdr = IPPROTO_ROUTING;
@@ -467,24 +468,49 @@ int main(int argc, char **argv) {
 				+ offsetof(struct frag_hdr, nexthdr);
 			exthdr.bytes_len += 8;
 		} else if (!strcmp(argv[i], ARG_AH)) {
-			//IPPROTO_AH
-			//ah size = (total bytes / 4) - 2
-/*
-if (*len < 16 || (*len % 8) || *len > 1024)
-	return NULL;
+			if (i+1 == argc) {
+				print_missing_size(ARG_AH);
+				goto error_out;
+			}
 
-const __u8 ah_icv[] = { 0xde, 0xad, 0xbe, 0xef };
-__u16 n_icv = (*len - 12) >> 2;
+			i += 1;
+			if (!valid_size(argv[i], MIN_BYTES_AH, MAX_BYTES_AH, &n)) {
+				print_invalid_size(ARG_AH);
+				goto error_out;
+			}
 
-struct ip_auth_hdr *ah = (void *)exthdr->bytes;
-ah->nexthdr = ipv6->nexthdr;
-ah->hdrlen = ((sizeof(*ah) + n_icv * sizeof(ah_icv)) >> 2) - 2;
-ah->spi = bpf_htonl(0x11223344);
-ah->seq_no = bpf_htonl(0x00000001);
+			if (!force && (flags & (FLAGS_AH | FLAGS_ESP |
+						FLAGS_DEST2))) {
+				print_not_rfc8200_compliant();
+				goto error_out;
+			}
+			flags |= FLAGS_AH;
 
-for(__u16 i = 0; i < n_icv; i++)
-	memcpy(ah->auth_data + i*4, ah_icv, sizeof(ah_icv));
-*/
+			if (exthdr.bytes_len + n > MAX_BYTES) {
+				print_size_overflow(MAX_BYTES);
+				goto error_out;
+			}
+
+			const __u8 icv[] = { rand(), rand(), rand(), rand() };
+			__u16 n_icv = (n >> 2) - 3;
+
+			struct ip_auth_hdr *ah = (void *)&exthdr.bytes[exthdr.bytes_len];
+			ah->hdrlen = ((sizeof(*ah) + n_icv * sizeof(icv)) >> 2) - 2;
+			ah->spi = bpf_htonl(rand());
+			ah->seq_no = bpf_htonl(rand());
+
+			for(j = 0; j < n_icv; j++)
+				memcpy(ah->auth_data + j*4, icv, sizeof(icv));
+
+			if (exthdr.bytes_len == 0) {
+				exthdr.ip6nexthdr = IPPROTO_AH;
+			} else if (exthdr.off_last_nexthdr != MAX_BYTES) {
+				exthdr.bytes[exthdr.off_last_nexthdr] = IPPROTO_AH;
+			}
+
+			exthdr.off_last_nexthdr = exthdr.bytes_len
+				+ offsetof(struct ip_auth_hdr, nexthdr);
+			exthdr.bytes_len += n;
 		} else if (!strcmp(argv[i], ARG_ESP)) {
 			//IPPROTO_ESP
 			//TODO set off_last_nexthdr = MAX_BYTES for ESP
