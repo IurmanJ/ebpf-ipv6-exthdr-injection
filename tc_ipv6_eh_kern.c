@@ -148,7 +148,7 @@ int egress_eh6(struct __sk_buff *skb)
 		exthdr->bytes[off_last_nexthdr] = ip6->nexthdr; //TODO conccurent read below
 	bpf_spin_unlock(&exthdr->lock);
 
-	if (bytes_len < MIN_BYTES || bytes_len > MAX_BYTES)
+	if (bytes_len < 8 || bytes_len > MAX_BYTES)
 		return TC_ACT_OK;
 
 	/* Make room for new bytes to be inserted.
