@@ -32,9 +32,12 @@
 
 #define MIN_BYTES_HBH		8
 #define MIN_BYTES_DEST		MIN_BYTES_HBH
-#define MIN_BYTES_RH0		(sizeof(struct rt0_hdr) + sizeof(struct in6_addr))
-#define MIN_BYTES_RH3		(sizeof(struct ipv6_rpl_sr_hdr) + sizeof(struct in6_addr))
-#define MIN_BYTES_RH4		(sizeof(struct ipv6_sr_hdr) + sizeof(struct in6_addr))
+#define MIN_BYTES_RH0		(sizeof(struct rt0_hdr) \
+				 + sizeof(((struct rt0_hdr*)0)->addr[0]))
+#define MIN_BYTES_RH3		(sizeof(struct ipv6_rpl_sr_hdr) \
+				 + sizeof(((struct ipv6_rpl_sr_hdr*)0)->rpl_segaddr[0]))
+#define MIN_BYTES_RH4		(sizeof(struct ipv6_sr_hdr) \
+				 + sizeof(((struct ipv6_sr_hdr*)0)->segments[0]))
 #define MIN_BYTES_AH		(sizeof(struct ip_auth_hdr) + 4)
 #define MIN_BYTES_ESP		(sizeof(struct ip_esp_hdr) + 8)
 
@@ -43,7 +46,7 @@
 #define MAX_BYTES_RH0		(255 << 3)
 #define MAX_BYTES_RH3		MAX_BYTES_RH0
 #define MAX_BYTES_RH4		MAX_BYTES_RH0
-#define MAX_BYTES_AH		((255 + 2) << 2)
+#define MAX_BYTES_AH		((255 + 1) << 2)
 #define MAX_BYTES_ESP		((MAX_BYTES) & (-8))
 
 #define FLAGS_HBH		(1 << 0)
@@ -70,7 +73,7 @@ struct frag_hdr {
 
 void print_help(const char *prog_name) {
 	printf("\nUsage: %s { --disable", prog_name);
-	printf(" | --enable [ --force ] EXTHDR [ EXTHDR ] }\n\n");
+	printf(" | --enable [ --force ] EXTHDR [ EXTHDR ... EXTHDR ] }\n\n");
 	printf("EXTHDR := {");
 	printf(" %s %d..%d", ARG_HBH, MIN_BYTES_HBH, MAX_BYTES_HBH);
 	printf(" | %s %d..%d", ARG_DEST, MIN_BYTES_DEST, MAX_BYTES_DEST);
@@ -134,6 +137,7 @@ int main(int argc, char **argv) {
 	unsigned int i, j, key = 0;
 	__u8 flags = 0, force = 0;
 	int fd, ret;
+	void *ptr;
 	long n;
 
 	if (argc < 2 || (argc == 2 && strcmp(argv[1], ARG_DISABLE)) ||
@@ -153,6 +157,8 @@ int main(int argc, char **argv) {
 
 	srand(time(NULL));
 	for(i; i < argc; i++) {
+		ptr = &exthdr.bytes[exthdr.bytes_len];
+
 		if (!strcmp(argv[i], ARG_HBH)) {
 			if (i+1 == argc) {
 				print_missing_size(ARG_HBH);
@@ -160,7 +166,8 @@ int main(int argc, char **argv) {
 			}
 
 			i += 1;
-			if (!valid_size(argv[i], MIN_BYTES_HBH, MAX_BYTES_HBH, &n)) {
+			if (!valid_size(argv[i], MIN_BYTES_HBH, MAX_BYTES_HBH,
+					&n)) {
 				print_invalid_size(ARG_HBH);
 				goto error_out;
 			}
@@ -179,13 +186,18 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct ipv6_opt_hdr *opt = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct ipv6_opt_hdr *opt = ptr;
 			opt->hdrlen = (n >> 3) - 1;
 
-			//TODO randomize bytes for options
 			for(j = sizeof(*opt); j+1 < n; j += 257) {
 				exthdr.bytes[exthdr.bytes_len+j] = 0x1e;
-				exthdr.bytes[exthdr.bytes_len+j+1] = MIN(n-j-sizeof(*opt), 255);
+
+				__u8 min_size = MIN(n-j-sizeof(*opt), 255);
+				exthdr.bytes[exthdr.bytes_len+j+1] = min_size;
+
+				__u32 pos = exthdr.bytes_len+j+2;
+				for(unsigned int k = 0; k < min_size; k++)
+					exthdr.bytes[pos+k] = rand();
 			}
 
 			if (exthdr.bytes_len == 0) {
@@ -204,7 +216,8 @@ int main(int argc, char **argv) {
 			}
 
 			i += 1;
-			if (!valid_size(argv[i], MIN_BYTES_DEST, MAX_BYTES_DEST, &n)) {
+			if (!valid_size(argv[i], MIN_BYTES_DEST, MAX_BYTES_DEST,
+					&n)) {
 				print_invalid_size(ARG_DEST);
 				goto error_out;
 			}
@@ -224,13 +237,18 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct ipv6_opt_hdr *opt = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct ipv6_opt_hdr *opt = ptr;
 			opt->hdrlen = (n >> 3) - 1;
 
-			//TODO randomize bytes for options
 			for(j = sizeof(*opt); j+1 < n; j += 257) {
 				exthdr.bytes[exthdr.bytes_len+j] = 0x1e;
-				exthdr.bytes[exthdr.bytes_len+j+1] = MIN(n-j-sizeof(*opt), 255);
+
+				__u8 min_size = MIN(n-j-sizeof(*opt), 255);
+				exthdr.bytes[exthdr.bytes_len+j+1] = min_size;
+
+				__u32 pos = exthdr.bytes_len+j+2;
+				for(unsigned int k = 0; k < min_size; k++)
+					exthdr.bytes[pos+k] = rand();
 			}
 
 			if (exthdr.bytes_len == 0) {
@@ -249,8 +267,8 @@ int main(int argc, char **argv) {
 			}
 
 			i += 1;
-			if (!valid_size(argv[i], MIN_BYTES_RH0, MAX_BYTES_RH0, &n) ||
-			    (n-8)%16 != 0) {
+			if (!valid_size(argv[i], MIN_BYTES_RH0, MAX_BYTES_RH0,
+					&n) || (n-8)%16 != 0) {
 				print_invalid_size(ARG_RH0);
 				goto error_out;
 			}
@@ -268,7 +286,7 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct rt0_hdr *rh = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct rt0_hdr *rh = ptr;
 			rh->rt_hdr.hdrlen = (n >> 3) - 1;
 			rh->rt_hdr.type = IPV6_SRCRT_TYPE_0;
 
@@ -303,7 +321,7 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct rt2_hdr *rh = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct rt2_hdr *rh = ptr;
 			rh->rt_hdr.hdrlen = 2;
 			rh->rt_hdr.type = IPV6_SRCRT_TYPE_2;
 			rh->rt_hdr.segments_left = 1;
@@ -328,8 +346,8 @@ int main(int argc, char **argv) {
 			}
 
 			i += 1;
-			if (!valid_size(argv[i], MIN_BYTES_RH3, MAX_BYTES_RH3, &n) ||
-			    (n-8)%16 != 0) {
+			if (!valid_size(argv[i], MIN_BYTES_RH3, MAX_BYTES_RH3,
+					&n) || (n-8)%16 != 0) {
 				print_invalid_size(ARG_RH3);
 				goto error_out;
 			}
@@ -347,7 +365,7 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct ipv6_rpl_sr_hdr *rh = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct ipv6_rpl_sr_hdr *rh = ptr;
 			rh->hdrlen = (n >> 3) - 1;
 			rh->type = IPV6_SRCRT_TYPE_3;
 
@@ -375,8 +393,8 @@ int main(int argc, char **argv) {
 			}
 
 			i += 1;
-			if (!valid_size(argv[i], MIN_BYTES_RH4, MAX_BYTES_RH4, &n) ||
-			    (n-8)%16 != 0) {
+			if (!valid_size(argv[i], MIN_BYTES_RH4, MAX_BYTES_RH4,
+					&n) || (n-8)%16 != 0) {
 				print_invalid_size(ARG_RH4);
 				goto error_out;
 			}
@@ -394,7 +412,7 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct ipv6_sr_hdr *rh = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct ipv6_sr_hdr *rh = ptr;
 			rh->hdrlen = (n >> 3) - 1;
 			rh->type = IPV6_SRCRT_TYPE_4;
 
@@ -429,7 +447,7 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct frag_hdr *frag = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct frag_hdr *frag = ptr;
 			frag->identification = bpf_htonl(rand());
 
 			if (exthdr.bytes_len == 0) {
@@ -454,7 +472,7 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			struct frag_hdr *frag = (void *)&exthdr.bytes[exthdr.bytes_len];
+			struct frag_hdr *frag = ptr;
 			frag->identification = bpf_htonl(rand());
 			frag->frag_off = bpf_htons(1);
 
@@ -474,7 +492,8 @@ int main(int argc, char **argv) {
 			}
 
 			i += 1;
-			if (!valid_size(argv[i], MIN_BYTES_AH, MAX_BYTES_AH, &n)) {
+			if (!valid_size(argv[i], MIN_BYTES_AH, MAX_BYTES_AH,
+					&n)) {
 				print_invalid_size(ARG_AH);
 				goto error_out;
 			}
@@ -491,16 +510,14 @@ int main(int argc, char **argv) {
 				goto error_out;
 			}
 
-			const __u8 icv[] = { rand(), rand(), rand(), rand() };
-			__u16 n_icv = (n >> 2) - 3;
-
-			struct ip_auth_hdr *ah = (void *)&exthdr.bytes[exthdr.bytes_len];
-			ah->hdrlen = ((sizeof(*ah) + n_icv * sizeof(icv)) >> 2) - 2;
+			struct ip_auth_hdr *ah = ptr;
 			ah->spi = bpf_htonl(rand());
 			ah->seq_no = bpf_htonl(rand());
 
-			for(j = 0; j < n_icv; j++)
-				memcpy(ah->auth_data + j*4, icv, sizeof(icv));
+			__u16 icv_len = n - 12;
+			ah->hdrlen = ((sizeof(*ah) + icv_len) >> 2) - 2;
+			for(j = 0; j < icv_len; j++)
+				ah->auth_data[j] = rand();
 
 			if (exthdr.bytes_len == 0) {
 				exthdr.ip6nexthdr = IPPROTO_AH;
@@ -512,23 +529,45 @@ int main(int argc, char **argv) {
 				+ offsetof(struct ip_auth_hdr, nexthdr);
 			exthdr.bytes_len += n;
 		} else if (!strcmp(argv[i], ARG_ESP)) {
-			//IPPROTO_ESP
-			//TODO set off_last_nexthdr = MAX_BYTES for ESP
-/*
-if (*len < 16 || (*len % 8) || *len > EH_MAX_BYTES)
-	return NULL;
+			if (i+1 == argc) {
+				print_missing_size(ARG_ESP);
+				goto error_out;
+			}
 
-const __u8 esp_enc[] = { 0xde, 0xad, 0xbe, 0xef };
-__u16 n_enc = (*len - 8) >> 2;
+			i += 1;
+			if (!valid_size(argv[i], MIN_BYTES_ESP, MAX_BYTES_ESP,
+					&n)) {
+				print_invalid_size(ARG_ESP);
+				goto error_out;
+			}
 
-struct ip_esp_hdr *esp = (void *)exthdr->bytes;
-esp->spi = bpf_htonl(0x11223344);
-esp->seq_no = bpf_htonl(0x00000001);
+			if (!force && (flags & (FLAGS_ESP | FLAGS_DEST2))) {
+				print_not_rfc8200_compliant();
+				goto error_out;
+			}
+			flags |= FLAGS_ESP;
 
-*len += bpf_ntohs(ipv6->payload_len) % 8;
-for(__u16 i = 0; i < n_enc; i++)
-	memcpy(esp->enc_data + i*4, esp_enc, sizeof(esp_enc));
-*/
+			if (exthdr.bytes_len + n > MAX_BYTES) {
+				print_size_overflow(MAX_BYTES);
+				goto error_out;
+			}
+
+			struct ip_esp_hdr *esp = ptr;
+			esp->spi = bpf_htonl(rand());
+			esp->seq_no = bpf_htonl(rand());
+
+			__u16 icv_len = n - 8;
+			for(j = 0; j < icv_len; j++)
+				esp->enc_data[j] = rand();
+
+			if (exthdr.bytes_len == 0) {
+				exthdr.ip6nexthdr = IPPROTO_ESP;
+			} else if (exthdr.off_last_nexthdr != MAX_BYTES) {
+				exthdr.bytes[exthdr.off_last_nexthdr] = IPPROTO_ESP;
+			}
+
+			exthdr.off_last_nexthdr = MAX_BYTES;
+			exthdr.bytes_len += n;
 		} else {
 			printf("\nUnexpected argument \"%s\"\n", argv[i]);
 			goto error_out;
