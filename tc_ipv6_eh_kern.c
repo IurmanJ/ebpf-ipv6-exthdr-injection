@@ -115,7 +115,7 @@ int egress_eh6(struct __sk_buff *skb)
 	__u32 off, bytes_len, off_last_nexthdr, idx = 0;
 	struct exthdr_t *exthdr;
 	struct ipv6hdr *ip6;
-	__u8 ip6nexthdr;
+	__u8 ip6nexthdr, x;
 
 	/* Check for IPv6, and pointer overflow (required by the verifier).
 	 */
@@ -144,20 +144,25 @@ int egress_eh6(struct __sk_buff *skb)
 	bytes_len = exthdr->bytes_len;
 	ip6nexthdr = exthdr->ip6nexthdr;
 	off_last_nexthdr = exthdr->off_last_nexthdr;
-	if (off_last_nexthdr < MAX_BYTES)
-		exthdr->bytes[off_last_nexthdr] = ip6->nexthdr; //TODO conccurent read below
 	bpf_spin_unlock(&exthdr->lock);
 
 	if (bytes_len < 8 || bytes_len > MAX_BYTES)
 		return TC_ACT_OK;
 
-	/* Make room for new bytes to be inserted.
+	/* Make room for new bytes and insert them.
 	 */
+	x = ip6->nexthdr;
 	if (bpf_skb_adjust_room(skb, bytes_len, BPF_ADJ_ROOM_NET, 0))
 		return TC_ACT_OK;
 
 	if (bpf_skb_store_bytes(skb, off, exthdr->bytes, bytes_len,
 				 BPF_F_RECOMPUTE_CSUM))
+		return TC_ACT_SHOT;
+
+	/* Update last Extension Header's nexthdr field.
+	 */
+	if (off_last_nexthdr < MAX_BYTES &&
+	    bpf_skb_store_bytes(skb, off + off_last_nexthdr, &x, sizeof(x), 0))
 		return TC_ACT_SHOT;
 
 	/* We need to restore/recheck pointers or the verifier will complain.
