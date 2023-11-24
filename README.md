@@ -37,7 +37,7 @@ Use case: inject a Hop-by-hop Options (8 bytes) and a Destination Options (16 by
 
 ```
 # tc qdisc add dev eth0 clsact
-# tc filter add dev eth0 egress bpf da obj build/tc_ipv6_eh_kern.o sec egress
+# tc filter add dev eth0 egress protocol ipv6 prio 10 bpf da obj build/tc_ipv6_eh_kern.o sec egress
 # ./build/tc_ipv6_eh_user.o --enable --hbh 8 --dest 16
 ```
 
