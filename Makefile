@@ -32,8 +32,8 @@ build:
 	uname -a
 	mkdir -p $@
 	deps/bpftool/src/bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@/vmlinux.h
-	$(CLANG) -g -O2 -Wall -Wextra -target bpf -D__TARGET_ARCH_x86_64 -I $@ -c tc_ipv6_eh_kern.c -o $@/tc_ipv6_eh_kern.o
-	$(GCC) tc_ipv6_eh_user.c -lbpf -o $@/tc_ipv6_eh_user.o
+	$(CLANG) -g -O2 -Wall -Wextra -target bpf -D__TARGET_ARCH_x86_64 -I $@ -I $@/usr/include -c tc_ipv6_eh_kern.c -o $@/tc_ipv6_eh_kern.o
+	$(GCC) tc_ipv6_eh_user.c -I $@/usr/include -L $@/usr/lib64 -lbpf -o $@/tc_ipv6_eh_user.o
 .PHONY: build
 
 clean:
