@@ -112,10 +112,10 @@ static __always_inline struct ipv6hdr * ipv6_header(
 SEC("egress")
 int egress_eh6(struct __sk_buff *skb)
 {
-	__u32 off, bytes_len, off_last_nexthdr, idx = 0;
+	__u32 off, bytes_len, off_last_nexthdr, idx = 0, mtu = 0;
 	struct exthdr_t *exthdr;
 	struct ipv6hdr *ip6;
-	__u8 ip6nexthdr, x;
+	__u8 ip6nexthdr;
 
 	/* Check for IPv6, and pointer overflow (required by the verifier).
 	 */
@@ -140,20 +140,28 @@ int egress_eh6(struct __sk_buff *skb)
 	 *       either need to copy bytes on the stack (too big, and too slow)
 	 *	 or read them without the lock (not good, but what can we do?).
 	 */
-	bpf_spin_lock(&exthdr->lock);
-	bytes_len = exthdr->bytes_len;
-	ip6nexthdr = exthdr->ip6nexthdr;
-	off_last_nexthdr = exthdr->off_last_nexthdr;
-	bpf_spin_unlock(&exthdr->lock);
+	//bpf_spin_lock(&exthdr->lock);
 
-	if (bytes_len < 8 || bytes_len > MAX_BYTES)
+	bytes_len = exthdr->bytes_len;
+	if (bytes_len < 8 || bytes_len > MAX_BYTES ||
+	    bpf_check_mtu(skb, skb->ifindex, &mtu, bytes_len, 0)) {
+		//bpf_spin_unlock(&exthdr->lock);
 		return TC_ACT_OK;
+	}
+
+	off_last_nexthdr = exthdr->off_last_nexthdr;
+
+	ip6nexthdr = ip6->nexthdr;
+	ip6->nexthdr = exthdr->ip6nexthdr;
+	ip6->payload_len = bpf_htons(bpf_ntohs(ip6->payload_len) + bytes_len);
+
+	//bpf_spin_unlock(&exthdr->lock);
+	/* ----------------------------------------------------------------- */
 
 	/* Make room for new bytes and insert them.
 	 */
-	x = ip6->nexthdr;
 	if (bpf_skb_adjust_room(skb, bytes_len, BPF_ADJ_ROOM_NET, 0))
-		return TC_ACT_OK;
+		return TC_ACT_SHOT;
 
 	if (bpf_skb_store_bytes(skb, off, exthdr->bytes, bytes_len,
 				 BPF_F_RECOMPUTE_CSUM))
@@ -162,19 +170,8 @@ int egress_eh6(struct __sk_buff *skb)
 	/* Update last Extension Header's nexthdr field.
 	 */
 	if (off_last_nexthdr < MAX_BYTES &&
-	    bpf_skb_store_bytes(skb, off + off_last_nexthdr, &x, sizeof(x), 0))
+	    bpf_skb_store_bytes(skb, off + off_last_nexthdr, &ip6nexthdr, sizeof(ip6nexthdr), 0))
 		return TC_ACT_SHOT;
-
-	/* We need to restore/recheck pointers or the verifier will complain.
-	 */
-	ip6 = ipv6_header(skb, &off);
-	if (!ip6)
-		return TC_ACT_SHOT;
-
-	/* Now, we can update the next header and the payload length fields.
-	 */
-	ip6->nexthdr = ip6nexthdr;
-	ip6->payload_len = bpf_htons(skb->len - off);
 
 	return TC_ACT_OK;
 }
