@@ -12,13 +12,8 @@
 #define TC_ACT_OK		0
 #define TC_ACT_SHOT		2
 
-#define UDP_SPORT		61344
-#define UDP_DPORT		33435
-#define TCP_SPORT		61887
+#define UDP_DPORT		443
 #define TCP_DPORT		443
-#define ICMP6_IDENT		62144
-
-#define icmp6_identifier	icmp6_dataun.u_echo.identifier
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -32,9 +27,9 @@ char _license[] SEC("license") = "GPL";
 
 
 /* Custom filter based on layer 4, matches on either:
- *  - TCP/SYN:		sport=TCP_SPORT, dport=TCP_DPORT
- *  - UDP:		sport=UDP_SPORT, dport=UDP_DPORT
- *  - ICMP6/EchoReq:	identifier=ICMP6_IDENT
+ *  - TCP:	dport=TCP_DPORT
+ *  - UDP:	dport=UDP_DPORT
+ *  - ICMPv6:	type=EchoRequest
  *
  * --> Feel free to modify it according to your needs.
  *
@@ -58,8 +53,7 @@ static __always_inline __u8 pass_custom_filter(
 			return 0;
 
 		tcp = data + offset;
-		if (tcp->syn && bpf_ntohs(tcp->source) == TCP_SPORT &&
-		    bpf_ntohs(tcp->dest) == TCP_DPORT)
+		if (bpf_ntohs(tcp->dest) == TCP_DPORT)
 			return 1;
 		break;
 
@@ -68,8 +62,7 @@ static __always_inline __u8 pass_custom_filter(
 			return 0;
 
 		udp = data + offset;
-		if (bpf_ntohs(udp->source) == UDP_SPORT &&
-		    bpf_ntohs(udp->dest) == UDP_DPORT)
+		if (bpf_ntohs(udp->dest) == UDP_DPORT)
 			return 1;
 		break;
 
@@ -78,8 +71,7 @@ static __always_inline __u8 pass_custom_filter(
 			return 0;
 
 		icmp6 = data + offset;
-		if (icmp6->icmp6_type == ICMPV6_ECHO_REQUEST &&
-		    bpf_ntohs(icmp6->icmp6_identifier) == ICMP6_IDENT)
+		if (icmp6->icmp6_type == ICMPV6_ECHO_REQUEST)
 			return 1;
 		break;
 
