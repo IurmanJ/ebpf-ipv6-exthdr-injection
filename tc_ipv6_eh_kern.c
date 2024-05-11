@@ -155,8 +155,7 @@ int egress_eh6(struct __sk_buff *skb)
 	if (bpf_skb_adjust_room(skb, bytes_len, BPF_ADJ_ROOM_NET, 0))
 		return TC_ACT_SHOT;
 
-	if (bpf_skb_store_bytes(skb, off, exthdr->bytes, bytes_len,
-				 BPF_F_RECOMPUTE_CSUM))
+	if (bpf_skb_store_bytes(skb, off, exthdr->bytes, bytes_len, 0))
 		return TC_ACT_SHOT;
 
 	/* Update last Extension Header's nexthdr field.
