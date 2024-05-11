@@ -161,7 +161,8 @@ int egress_eh6(struct __sk_buff *skb)
 	/* Update last Extension Header's nexthdr field.
 	 */
 	if (off_last_nexthdr < MAX_BYTES &&
-	    bpf_skb_store_bytes(skb, off + off_last_nexthdr, &ip6nexthdr, sizeof(ip6nexthdr), 0))
+	    bpf_skb_store_bytes(skb, off + off_last_nexthdr, &ip6nexthdr,
+				sizeof(ip6nexthdr), 0))
 		return TC_ACT_SHOT;
 
 	return TC_ACT_OK;
