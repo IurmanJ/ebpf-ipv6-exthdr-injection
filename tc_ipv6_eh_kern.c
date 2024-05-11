@@ -27,7 +27,7 @@ char _license[] SEC("license") = "GPL";
 
 
 /* Custom filter based on layer 4, matches on either:
- *  - TCP:	dport=TCP_DPORT
+ *  - TCP:	SYN, dport=TCP_DPORT
  *  - UDP:	dport=UDP_DPORT
  *  - ICMPv6:	type=EchoRequest
  *
@@ -53,7 +53,7 @@ static __always_inline __u8 pass_custom_filter(
 			return 0;
 
 		tcp = data + offset;
-		if (bpf_ntohs(tcp->dest) == TCP_DPORT)
+		if (tcp->syn && bpf_ntohs(tcp->dest) == TCP_DPORT)
 			return 1;
 		break;
 
@@ -128,8 +128,8 @@ int egress_eh6(struct __sk_buff *skb)
 
 	/* Hold the lock to read data.
 	 *
-	 * Note: we can't hold the lock and call a function on ->bytes, so we
-	 *       either need to copy bytes on the stack (too big, and too slow)
+	 * Note: we can't hold the lock and call a bpf_* function, so we
+	 *       either need to copy bytes on the stack (too big and too slow)
 	 *	 or read them without the lock (not good, but what can we do?).
 	 */
 	//bpf_spin_lock(&exthdr->lock);
@@ -147,9 +147,6 @@ int egress_eh6(struct __sk_buff *skb)
 	ip6->nexthdr = exthdr->ip6nexthdr;
 	ip6->payload_len = bpf_htons(bpf_ntohs(ip6->payload_len) + bytes_len);
 
-	//bpf_spin_unlock(&exthdr->lock);
-	/* ----------------------------------------------------------------- */
-
 	/* Make room for new bytes and insert them.
 	 */
 	if (bpf_skb_adjust_room(skb, bytes_len, BPF_ADJ_ROOM_NET, 0))
@@ -157,6 +154,9 @@ int egress_eh6(struct __sk_buff *skb)
 
 	if (bpf_skb_store_bytes(skb, off, exthdr->bytes, bytes_len, 0))
 		return TC_ACT_SHOT;
+
+	//bpf_spin_unlock(&exthdr->lock);
+	/* ----------------------------------------------------------------- */
 
 	/* Update last Extension Header's nexthdr field.
 	 */
