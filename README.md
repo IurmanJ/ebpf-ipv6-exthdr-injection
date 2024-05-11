@@ -48,3 +48,28 @@ Note: You may need to set `LD_LIBRARY_PATH` in order to run the user program:
 ```
 # LD_LIBRARY_PATH=deps/libbpf/src ./build/tc_ipv6_eh_user.o --enable --hbh 8 --dest 16
 ```
+
+Here is the output of the *help* section:
+
+```
+Usage: ./build/tc_ipv6_eh_user.o { --disable | --enable [ --force ] EXTHDR [ EXTHDR ... EXTHDR ] }
+
+EXTHDR := { --hbh 8..2048 | --dest 8..2048 | --rh0 24..2040 | --rh2 | --rh3 24..2040 | --rh4 24..2040 | --fragA | --fragNA | --ah 16..1024 | --esp 16..2048 }
+
+If a size is required, it MUST be an 8-octet multiple.
+Routing Header sizes minus 8 MUST be 16-octet multiples.
+
+Accepted chaining order, as per RFC8200 sec4.1:
+ - Hop-by-Hop Options header
+ - Destination Options header
+ - Routing header
+ - Fragment header
+ - Authentication header
+ - Encapsulating Security Payload header
+ - Destination Options header
+
+```
+
+## Notes
+
+If you encounter issues with checksum verifications (or any related problem where a packet magically disappears somewhere on the path), you may need to **disable TX checksum offloading** (`sudo ethtool -K eth0 tx off`) where IPv6 EHs are injected.
